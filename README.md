@@ -4,11 +4,14 @@ Mac Vision OCR PDF cli is a Swift command-line tool that adds invisible, searcha
 
 ## Features
 - **Image and PDF input support** - Process PNG, JPG, and PDF files
+- **Batch processing** - Process entire directories of documents at once
 - **Intelligent text layer detection** - Automatically skips PDFs that already have text layers
 - **Multi-page PDF support** - Processes all pages in PDF documents
 - **Invisible text layer** - OCR text is completely invisible but fully selectable and searchable
 - **High-resolution rendering** - 2x retina quality rendering for PDF inputs
 - **Accurate text positioning** - OCR text precisely overlays the original image content
+- **Safety features** - Never modifies originals, continues on errors, quality verification
+- **Progress tracking** - Real-time progress display and detailed log files
 - **Debug mode** - Visualize recognized text bounding boxes for testing
 
 ## How It Works
@@ -27,15 +30,18 @@ The tool uses Apple's Vision framework to perform OCR and detect text bounding b
 ### Build from Source
 Compile the project:
    ```sh
-   swiftc macocrpdf.swift -o macocrpdf 
+   swiftc macocrpdf.swift -o macocrpdf
    ```
 
 ## Usage
+
+### Single File Mode
+Process a single image or PDF file:
 ```sh
-./macocrpdf <input_file_path> <output_pdf_path> [--debug]
+./macocrpdf <input_file> <output_pdf> [--debug]
 ```
 
-### Examples
+#### Examples
 - Process a single image:
   ```sh
   ./macocrpdf image.png output.pdf
@@ -49,11 +55,72 @@ Compile the project:
   ./macocrpdf image.png output.pdf --debug
   ```
 
+### Directory Batch Mode
+Process entire directories of documents:
+```sh
+./macocrpdf <input_dir> [<output_dir>] [--inplace] [--debug]
+```
+
+#### Default Mode
+Creates an adjacent directory with `-ocr` suffix:
+```sh
+./macocrpdf /path/to/documents/
+# Creates: /path/to/documents-ocr/
+#   ├── file1.pdf
+#   ├── file2.pdf
+#   └── file3.pdf
+```
+
+#### Custom Output Directory
+Specify a custom output location:
+```sh
+./macocrpdf /path/to/documents/ /path/to/output/
+# Creates OCR files in: /path/to/output/
+```
+
+#### Inplace Mode
+Processes files in place with selective backup (only processed files are backed up):
+```sh
+./macocrpdf /path/to/documents/ --inplace
+# Note: Cannot be combined with custom output directory (mutually exclusive)
+# Original:                  After processing:
+# documents/                 documents/              documents-source/
+# ├── new.png               ├── new.pdf ✅          └── new.png (backup)
+# ├── has-text.pdf          ├── has-text.pdf ✅
+# ├── README.md       →     ├── README.md ✅
+# └── archive/              └── archive/ ✅
+#     └── old.txt               └── old.txt
+```
+
+**Smart backup strategy**:
+- Files that need processing → Moved to `-source` backup BEFORE processing
+- PDFs with existing text layers → Stay in place (no backup needed)
+- Subdirectories → Stay in place (preserved completely)
+- Non-processable files → Stay in place (README, etc.)
+
+**Safety guarantee**: Only files that are actually modified get backed up to `-source`. Everything else stays untouched in the original directory. The backup contains pristine originals of processed files only.
+
+### Batch Processing Features
+- **Progress display**: Shows current file count (e.g., "Processing 5/20")
+- **Automatic skipping**: Files with existing text layers are skipped
+- **Error resilience**: One failed file doesn't stop the batch
+- **Quality verification**: Warns about suspiciously low OCR results
+- **Detailed logging**: Creates `ocr-process.log` in current directory
+- **Summary report**: Shows processed, skipped, and failed counts
+
 ### Behavior
 - **PDFs with existing text layers** are automatically skipped to prevent double-processing
 - **Image files** (PNG, JPG, JPEG) are converted to searchable PDFs
 - **Image-only PDFs** have an invisible OCR text layer added to each page
+- **Originals are never modified** in default mode (safe by default)
+- **Failed files** are logged but don't interrupt batch processing
 - All output preserves the original visual appearance with invisible, selectable text
+
+### Important Notes
+- **Conflicting options**: You cannot use both a custom output directory and `--inplace` flag together. They are mutually exclusive:
+  - Custom output directory means "put results elsewhere"
+  - `--inplace` means "process in the original directory"
+  - If both are specified, the tool will exit with an error message
 
 ## License
 This project is licensed under the MIT License.
