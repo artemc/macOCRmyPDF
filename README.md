@@ -1,12 +1,22 @@
-# Mac Vision OCR PDF 
+# Mac Vision OCR PDF
 
-Mac Vision OCR PDF cli is a Swift command-line tool that extracts text from images and generates a searchable PDF.
+Mac Vision OCR PDF cli is a Swift command-line tool that adds invisible, searchable OCR text layers to images and PDFs using Apple's Vision framework.
 
 ## Features
-- Extracts text using Apple's Vision framework.
-- Outputs text as a selectable/searchable PDF.
-- Debug mode to visualize recognized text bounding boxes.
-- Ensures PDF/A compliance with metadata.
+- **Image and PDF input support** - Process PNG, JPG, and PDF files
+- **Intelligent text layer detection** - Automatically skips PDFs that already have text layers
+- **Multi-page PDF support** - Processes all pages in PDF documents
+- **Invisible text layer** - OCR text is completely invisible but fully selectable and searchable
+- **High-resolution rendering** - 2x retina quality rendering for PDF inputs
+- **Accurate text positioning** - OCR text precisely overlays the original image content
+- **Debug mode** - Visualize recognized text bounding boxes for testing
+
+## How It Works
+The tool uses Apple's Vision framework to perform OCR and detect text bounding boxes. The recognized text is then rendered as an **invisible text layer** positioned precisely over the original image content. This creates a search-optimized PDF where:
+- The visual appearance remains unchanged (no visible text overlay)
+- Text can be selected, copied, and searched
+- The PDF is fully searchable by content
+- Original image quality is preserved at high resolution
 
 ## Requirements
 - macOS 12+ (Monterey or later)
@@ -15,14 +25,14 @@ Mac Vision OCR PDF cli is a Swift command-line tool that extracts text from imag
 
 ## Installation
 ### Build from Source
-1. Compile the project:
+Compile the project:
    ```sh
    swiftc macocrpdf.swift -o macocrpdf 
    ```
 
 ## Usage
 ```sh
-./macocrpdf <input_image_path> <output_pdf_path> [--debug]
+./macocrpdf <input_file_path> <output_pdf_path> [--debug]
 ```
 
 ### Examples
@@ -30,10 +40,20 @@ Mac Vision OCR PDF cli is a Swift command-line tool that extracts text from imag
   ```sh
   ./macocrpdf image.png output.pdf
   ```
-- Enable debug mode (shows bounding boxes in terminal and PDF):
+- Process a PDF without text layer:
   ```sh
-  ./macocrpdf image.png output.pdf  --debug
+  ./macocrpdf scanned.pdf output.pdf
   ```
+- Enable debug mode (shows bounding boxes and recognized text):
+  ```sh
+  ./macocrpdf image.png output.pdf --debug
+  ```
+
+### Behavior
+- **PDFs with existing text layers** are automatically skipped to prevent double-processing
+- **Image files** (PNG, JPG, JPEG) are converted to searchable PDFs
+- **Image-only PDFs** have an invisible OCR text layer added to each page
+- All output preserves the original visual appearance with invisible, selectable text
 
 ## License
 This project is licensed under the MIT License.
