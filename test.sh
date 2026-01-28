@@ -403,6 +403,26 @@ test_dot_directory() {
     assert_success "Dot directory uses actual directory name in inplace mode"
 }
 
+# Test 15: Relative output directory
+test_relative_output_directory() {
+    echo -e "\n${BLUE}=== Test 15: Relative Output Directory ===${NC}"
+
+    mkdir -p "$TEST_DIR/reltest"
+    cp in.png "$TEST_DIR/reltest/file.png"
+
+    # Test with relative path like "../output"
+    cd "$TEST_DIR/reltest"
+    OUTPUT=$(../../macocrpdf . ../rel-out 2>&1)
+    cd - > /dev/null
+
+    # Verify relative output directory was created and used
+    assert_dir_exists "$TEST_DIR/rel-out"
+    assert_file_exists "$TEST_DIR/rel-out/file.pdf"
+
+    echo "$OUTPUT" | grep -q "Found 1"
+    assert_success "Relative output directory works correctly"
+}
+
 # Test 12: Inplace mode with skipped files and subdirectories
 test_inplace_with_skipped_files() {
     echo -e "\n${BLUE}=== Test 12: Inplace Mode - Skipped Files & Subdirs Preserved ===${NC}"
@@ -468,6 +488,7 @@ main() {
     test_inplace_with_skipped_files
     test_conflicting_flags
     test_dot_directory
+    test_relative_output_directory
 
     cleanup
 
