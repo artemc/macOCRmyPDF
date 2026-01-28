@@ -367,6 +367,42 @@ test_conflicting_flags() {
     assert_success "No processing occurred with conflicting flags"
 }
 
+# Test 14: Dot directory handling
+test_dot_directory() {
+    echo -e "\n${BLUE}=== Test 14: Dot Directory (.) Handling ===${NC}"
+
+    # Test default mode with "."
+    mkdir -p "$TEST_DIR/dottest"
+    cp in.png "$TEST_DIR/dottest/file.png"
+
+    cd "$TEST_DIR/dottest"
+    OUTPUT=$(../../macocrpdf . 2>&1)
+    cd - > /dev/null
+
+    # Should create dottest-ocr, not .-ocr
+    assert_dir_exists "$TEST_DIR/dottest-ocr"
+    assert_file_exists "$TEST_DIR/dottest-ocr/file.pdf"
+
+    echo "$OUTPUT" | grep -q "Found 1"
+    assert_success "Dot directory processed in default mode"
+
+    # Test inplace mode with "."
+    mkdir -p "$TEST_DIR/dottest2"
+    cp in.png "$TEST_DIR/dottest2/file2.png"
+
+    cd "$TEST_DIR/dottest2"
+    OUTPUT=$(../../macocrpdf . --inplace 2>&1)
+    cd - > /dev/null
+
+    # Should create dottest2-source, not .-source
+    assert_dir_exists "$TEST_DIR/dottest2-source"
+    assert_file_exists "$TEST_DIR/dottest2-source/file2.png"
+    assert_file_exists "$TEST_DIR/dottest2/file2.pdf"
+
+    echo "$OUTPUT" | grep -q "dottest2-source"
+    assert_success "Dot directory uses actual directory name in inplace mode"
+}
+
 # Test 12: Inplace mode with skipped files and subdirectories
 test_inplace_with_skipped_files() {
     echo -e "\n${BLUE}=== Test 12: Inplace Mode - Skipped Files & Subdirs Preserved ===${NC}"
@@ -431,6 +467,7 @@ main() {
     test_debug_mode
     test_inplace_with_skipped_files
     test_conflicting_flags
+    test_dot_directory
 
     cleanup
 

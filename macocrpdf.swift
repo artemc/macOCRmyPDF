@@ -122,7 +122,10 @@ func logToFile(_ message: String, logPath: String) {
 
 func setupInplaceMode(inputDir: String) -> String? {
     let fileManager = FileManager.default
-    let inputURL = URL(fileURLWithPath: inputDir)
+
+    // Resolve relative paths (like ".") to absolute paths to get the actual directory name
+    let absolutePath = (inputDir as NSString).standardizingPath
+    let inputURL = URL(fileURLWithPath: absolutePath)
     let parentDir = inputURL.deletingLastPathComponent()
     let dirName = inputURL.lastPathComponent
 
@@ -620,7 +623,9 @@ if isDirectory.boolValue {
             outputDir = CommandLine.arguments[2]
         } else {
             // Default: add -ocr suffix to input directory name
-            let inputURL = URL(fileURLWithPath: inputPath)
+            // Resolve relative paths (like ".") to get actual directory name
+            let absolutePath = (inputPath as NSString).standardizingPath
+            let inputURL = URL(fileURLWithPath: absolutePath)
             let parentDir = inputURL.deletingLastPathComponent()
             let dirName = inputURL.lastPathComponent
             outputDir = parentDir.appendingPathComponent("\(dirName)-ocr").path
