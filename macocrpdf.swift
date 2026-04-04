@@ -60,16 +60,33 @@ func pdfHasTextLayer(pdfURL: URL) -> Bool {
     return false
 }
 
-func discoverFiles(in directory: String) -> [URL] {
+func discoverFiles(in directory: String, recursive: Bool = false) -> [URL] {
     let fileManager = FileManager.default
     let dirURL = URL(fileURLWithPath: directory)
 
-    guard let contents = try? fileManager.contentsOfDirectory(
-        at: dirURL,
-        includingPropertiesForKeys: [.contentModificationDateKey],
-        options: [.skipsHiddenFiles]
-    ) else {
-        return []
+    var contents: [URL] = []
+    
+    if recursive {
+        if let enumerator = fileManager.enumerator(
+            at: dirURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let url as URL in enumerator {
+                if let isDirectory = try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, isDirectory {
+                    continue
+                }
+                contents.append(url)
+            }
+        }
+    } else {
+        if let shallowContents = try? fileManager.contentsOfDirectory(
+            at: dirURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            contents = shallowContents
+        }
     }
 
     let supportedExtensions = ["pdf", "png", "jpg", "jpeg"]
@@ -400,7 +417,7 @@ func recognizeText(from imagePath: String, outputPDFPath: String, debug: Bool = 
     }
 }
 
-func processBatch(inputDir: String, outputDir: String, inplace: Bool, backupDir: String?, debug: Bool) -> BatchResult {
+func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive: Bool, backupDir: String?, debug: Bool) -> BatchResult {
     var result = BatchResult()
     let fileManager = FileManager.default
     let logPath = "\(fileManager.currentDirectoryPath)/ocr-process.log"
@@ -410,12 +427,13 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, backupDir:
     logToFile("Input directory: \(inputDir)", logPath: logPath)
     logToFile("Output directory: \(outputDir)", logPath: logPath)
     logToFile("Inplace mode: \(inplace)", logPath: logPath)
+    logToFile("Recursive mode: \(recursive)", logPath: logPath)
     if let backup = backupDir {
         logToFile("Backup directory: \(backup)", logPath: logPath)
     }
 
     // Discover files
-    let actualFiles = discoverFiles(in: inputDir)
+    let actualFiles = discoverFiles(in: inputDir, recursive: recursive)
 
     guard !actualFiles.isEmpty else {
         print("No supported files found in directory")
@@ -447,9 +465,34 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, backupDir:
         print("Processing \(index + 1)/\(actualFiles.count): \(fileName)")
         logToFile("Processing file \(index + 1)/\(actualFiles.count): \(fileName)", logPath: logPath)
 
+        // Determine output path preserving directory structure
+        let inputDirStandardized = URL(fileURLWithPath: inputDir).standardizedFileURL.path
+        let fileDirStandardized = fileURL.deletingLastPathComponent().standardizedFileURL.path
+        
+        var relativePath = ""
+        if fileDirStandardized.hasPrefix(inputDirStandardized) {
+            relativePath = String(fileDirStandardized.dropFirst(inputDirStandardized.count))
+            if relativePath.hasPrefix("/") {
+                relativePath = String(relativePath.dropFirst())
+            }
+        }
+        
+        let fileOutputDir = relativePath.isEmpty ? outputDir : "\(outputDir)/\(relativePath)"
+        
+        if !fileManager.fileExists(atPath: fileOutputDir) {
+            do {
+                try fileManager.createDirectory(atPath: fileOutputDir, withIntermediateDirectories: true)
+            } catch {
+                result.failed += 1
+                result.errors.append((fileName, "Failed to create directory: \(error.localizedDescription)"))
+                print("  Failed: Could not create output directory")
+                continue
+            }
+        }
+
         // Determine output path
         let outputFileName = "\(baseNameWithoutExt).pdf"
-        let outputPath = "\(outputDir)/\(outputFileName)"
+        let outputPath = "\(fileOutputDir)/\(outputFileName)"
 
         // In inplace mode, check if file will be skipped before moving it
         if inplace && fileExtension == "pdf" && pdfHasTextLayer(pdfURL: fileURL) {
@@ -464,7 +507,12 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, backupDir:
         // In inplace mode, move file to backup before processing
         var sourceFilePath = fileURL.path
         if inplace, let backup = backupDir {
-            let backupFilePath = "\(backup)/\(fileName)"
+            let backupFileDir = relativePath.isEmpty ? backup : "\(backup)/\(relativePath)"
+            if !fileManager.fileExists(atPath: backupFileDir) {
+                try? fileManager.createDirectory(atPath: backupFileDir, withIntermediateDirectories: true)
+            }
+            
+            let backupFilePath = "\(backupFileDir)/\(fileName)"
             do {
                 try fileManager.moveItem(atPath: fileURL.path, toPath: backupFilePath)
                 sourceFilePath = backupFilePath
@@ -569,7 +617,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, backupDir:
 if CommandLine.arguments.count < 2 {
     print("Usage:")
     print("  Single file:  macocrpdf <input_file> <output_pdf> [--debug]")
-    print("  Directory:    macocrpdf <input_dir> [<output_dir>] [--inplace] [--debug]")
+    print("  Directory:    macocrpdf <input_dir> [<output_dir>] [--inplace] [--recursive | -r] [--debug]")
     print("")
     print("Single file mode:")
     print("  Supports image files (PNG, JPG, etc.) and PDF files")
@@ -579,6 +627,8 @@ if CommandLine.arguments.count < 2 {
     print("  Default:       Creates <input_dir>-ocr/ with processed files")
     print("  Custom output: Uses specified output directory")
     print("  --inplace:     Moves originals to <input_dir>-source/, replaces with OCR versions")
+    print("  --recursive:   Process files in subdirectories")
+    print("  -r:            Alias for --recursive")
     exit(1)
 }
 
@@ -586,6 +636,7 @@ let fileManager = FileManager.default
 let inputPath = CommandLine.arguments[1]
 let debugMode = CommandLine.arguments.contains("--debug")
 let inplaceMode = CommandLine.arguments.contains("--inplace")
+let recursiveMode = CommandLine.arguments.contains("--recursive") || CommandLine.arguments.contains("-r")
 
 var isDirectory: ObjCBool = false
 fileManager.fileExists(atPath: inputPath, isDirectory: &isDirectory)
@@ -596,7 +647,7 @@ if isDirectory.boolValue {
 
     if inplaceMode {
         // Check if user specified both output directory and --inplace (mutually exclusive)
-        if CommandLine.arguments.count >= 3 && !CommandLine.arguments[2].hasPrefix("--") {
+        if CommandLine.arguments.count >= 3 && !CommandLine.arguments[2].hasPrefix("-") {
             print("Error: Cannot use custom output directory with --inplace flag")
             print("--inplace processes files in the original directory")
             print("Remove either the output directory or the --inplace flag")
@@ -611,11 +662,11 @@ if isDirectory.boolValue {
         // Process in place: files stay in original directory
         // Only files that are processed get moved to backup first
         // Skipped files and subdirectories remain untouched
-        _ = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, backupDir: backupDir, debug: debugMode)
+        _ = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, recursive: recursiveMode, backupDir: backupDir, debug: debugMode)
 
     } else {
         // Check if second argument is provided and is not a flag
-        if CommandLine.arguments.count >= 3 && !CommandLine.arguments[2].hasPrefix("--") {
+        if CommandLine.arguments.count >= 3 && !CommandLine.arguments[2].hasPrefix("-") {
             // Custom output directory
             outputDir = CommandLine.arguments[2]
         } else {
@@ -628,7 +679,7 @@ if isDirectory.boolValue {
             outputDir = parentDir.appendingPathComponent("\(dirName)-ocr").path
         }
 
-        _ = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, backupDir: nil, debug: debugMode)
+        _ = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, recursive: recursiveMode, backupDir: nil, debug: debugMode)
     }
 
 } else {
