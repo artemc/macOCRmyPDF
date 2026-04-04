@@ -245,7 +245,7 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
     return extractedText
 }
 
-func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false) -> Result<String, OCRError> {
+func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false, redoOCR: Bool = false) -> Result<String, OCRError> {
     let pdfURL = URL(fileURLWithPath: pdfPath)
 
     guard let inputPDF = PDFDocument(url: pdfURL) else {
@@ -256,10 +256,16 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
     }
 
     if pdfHasTextLayer(pdfURL: pdfURL) {
-        if debug {
-            print("PDF already has a text layer. Skipping.")
+        if redoOCR {
+            if debug {
+                print("PDF already has a text layer. Redoing OCR.")
+            }
+        } else {
+            if debug {
+                print("PDF already has a text layer. Skipping.")
+            }
+            return .failure(.textLayerExists)
         }
-        return .failure(.textLayerExists)
     }
 
     if debug {
@@ -335,7 +341,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         
         let pageText = processImageToPDF(
             cgImage: cgImage, 
-            originalPDFPage: page.pageRef, 
+            originalPDFPage: redoOCR ? nil : page.pageRef, 
             pdfContext: pdfContext, 
             pageBounds: pageBounds, 
             debug: debug
@@ -417,7 +423,7 @@ func recognizeText(from imagePath: String, outputPDFPath: String, debug: Bool = 
     }
 }
 
-func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive: Bool, backupDir: String?, debug: Bool) -> BatchResult {
+func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive: Bool, backupDir: String?, debug: Bool, redoOCR: Bool = false) -> BatchResult {
     var result = BatchResult()
     let fileManager = FileManager.default
     let logPath = "\(fileManager.currentDirectoryPath)/ocr-process.log"
@@ -495,7 +501,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         let outputPath = "\(fileOutputDir)/\(outputFileName)"
 
         // In inplace mode, check if file will be skipped before moving it
-        if inplace && fileExtension == "pdf" && pdfHasTextLayer(pdfURL: fileURL) {
+        if inplace && fileExtension == "pdf" && !redoOCR && pdfHasTextLayer(pdfURL: fileURL) {
             // File already has text layer - leave it in place, no backup needed
             result.skipped += 1
             print("  Skipped (already has text layer)")
@@ -531,7 +537,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         let processResult: Result<String, OCRError>
 
         if fileExtension == "pdf" {
-            processResult = processPDF(from: sourceFilePath, outputPDFPath: outputPath, debug: debug)
+            processResult = processPDF(from: sourceFilePath, outputPDFPath: outputPath, debug: debug, redoOCR: redoOCR)
         } else {
             processResult = recognizeText(from: sourceFilePath, outputPDFPath: outputPath, debug: debug)
         }
@@ -616,8 +622,8 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
 
 if CommandLine.arguments.count < 2 {
     print("Usage:")
-    print("  Single file:  macocrpdf <input_file> <output_pdf> [--debug]")
-    print("  Directory:    macocrpdf <input_dir> [<output_dir>] [--inplace] [--recursive | -r] [--debug]")
+    print("  Single file:  macocrpdf <input_file> <output_pdf> [--debug] [--redo-ocr]")
+    print("  Directory:    macocrpdf <input_dir> [<output_dir>] [--inplace] [--recursive | -r] [--debug] [--redo-ocr]")
     print("")
     print("Single file mode:")
     print("  Supports image files (PNG, JPG, etc.) and PDF files")
@@ -629,6 +635,7 @@ if CommandLine.arguments.count < 2 {
     print("  --inplace:     Moves originals to <input_dir>-source/, replaces with OCR versions")
     print("  --recursive:   Process files in subdirectories")
     print("  -r:            Alias for --recursive")
+    print("  --redo-ocr:    Redo OCR for PDFs that already have a text layer (rasterizes original)")
     exit(1)
 }
 
@@ -637,6 +644,7 @@ let inputPath = CommandLine.arguments[1]
 let debugMode = CommandLine.arguments.contains("--debug")
 let inplaceMode = CommandLine.arguments.contains("--inplace")
 let recursiveMode = CommandLine.arguments.contains("--recursive") || CommandLine.arguments.contains("-r")
+let redoOCRMode = CommandLine.arguments.contains("--redo-ocr")
 
 var isDirectory: ObjCBool = false
 fileManager.fileExists(atPath: inputPath, isDirectory: &isDirectory)
@@ -662,7 +670,7 @@ if isDirectory.boolValue {
         // Process in place: files stay in original directory
         // Only files that are processed get moved to backup first
         // Skipped files and subdirectories remain untouched
-        _ = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, recursive: recursiveMode, backupDir: backupDir, debug: debugMode)
+        _ = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, recursive: recursiveMode, backupDir: backupDir, debug: debugMode, redoOCR: redoOCRMode)
 
     } else {
         // Check if second argument is provided and is not a flag
@@ -679,7 +687,7 @@ if isDirectory.boolValue {
             outputDir = parentDir.appendingPathComponent("\(dirName)-ocr").path
         }
 
-        _ = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, recursive: recursiveMode, backupDir: nil, debug: debugMode)
+        _ = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, recursive: recursiveMode, backupDir: nil, debug: debugMode, redoOCR: redoOCRMode)
     }
 
 } else {
@@ -695,7 +703,7 @@ if isDirectory.boolValue {
 
     let result: Result<String, OCRError>
     if fileExtension == "pdf" {
-        result = processPDF(from: inputPath, outputPDFPath: outputPDFPath, debug: true)
+        result = processPDF(from: inputPath, outputPDFPath: outputPDFPath, debug: true, redoOCR: redoOCRMode)
     } else {
         result = recognizeText(from: inputPath, outputPDFPath: outputPDFPath, debug: true)
     }
