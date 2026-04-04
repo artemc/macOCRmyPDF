@@ -4,14 +4,15 @@ Mac Vision OCR PDF cli is a Swift command-line tool that adds invisible, searcha
 
 ## Features
 - **Image and PDF input support** - Process PNG, JPG, and PDF files
-- **Batch processing** - Process entire directories of documents at once
-- **Intelligent text layer detection** - Automatically skips PDFs that already have text layers
+- **Batch processing** - Process entire directories and subdirectories of documents at once, preserving directory structure
+- **Intelligent text layer detection** - Automatically skips PDFs that already have text layers (override with `--redo-ocr`)
 - **Multi-page PDF support** - Processes all pages in PDF documents
 - **Invisible text layer** - OCR text is completely invisible but fully selectable and searchable
 - **High-resolution rendering** - 2x retina quality rendering for PDF inputs
+- **Original quality preservation** - Avoids recompression to maintain pristine quality of original PDFs
 - **Accurate text positioning** - OCR text precisely overlays the original image content
 - **Safety features** - Never modifies originals, continues on errors, quality verification
-- **Progress tracking** - Real-time progress display and detailed log files
+- **Progress tracking** - Real-time progress display, explicit logging of output paths, and detailed log files
 - **Debug mode** - Visualize recognized text bounding boxes for testing
 
 ## How It Works
@@ -38,7 +39,7 @@ Compile the project:
 ### Single File Mode
 Process a single image or PDF file:
 ```sh
-./macocrpdf <input_file> <output_pdf> [--debug]
+./macocrpdf <input_file> <output_pdf> [--debug] [--redo-ocr]
 ```
 
 #### Examples
@@ -50,6 +51,10 @@ Process a single image or PDF file:
   ```sh
   ./macocrpdf scanned.pdf output.pdf
   ```
+- Force reprocessing of a PDF that already has a text layer:
+  ```sh
+  ./macocrpdf scanned.pdf output.pdf --redo-ocr
+  ```
 - Enable debug mode (shows bounding boxes and recognized text):
   ```sh
   ./macocrpdf image.png output.pdf --debug
@@ -58,7 +63,7 @@ Process a single image or PDF file:
 ### Directory Batch Mode
 Process entire directories of documents:
 ```sh
-./macocrpdf <input_dir> [<output_dir>] [--inplace] [--debug]
+./macocrpdf <input_dir> [<output_dir>] [--inplace] [--recursive | -r] [--debug] [--redo-ocr]
 ```
 
 #### Default Mode
@@ -76,6 +81,14 @@ Specify a custom output location:
 ```sh
 ./macocrpdf /path/to/documents/ /path/to/output/
 # Creates OCR files in: /path/to/output/
+```
+
+#### Recursive Mode
+Process files in all subdirectories dynamically, preserving the directory structure:
+```sh
+./macocrpdf /path/to/documents/ --recursive
+# Or use the short flag:
+./macocrpdf /path/to/documents/ -r
 ```
 
 #### Inplace Mode
@@ -101,8 +114,9 @@ Processes files in place with selective backup (only processed files are backed 
 **Safety guarantee**: Only files that are actually modified get backed up to `-source`. Everything else stays untouched in the original directory. The backup contains pristine originals of processed files only.
 
 ### Batch Processing Features
-- **Progress display**: Shows current file count (e.g., "Processing 5/20")
-- **Automatic skipping**: Files with existing text layers are skipped
+- **Progress display**: Shows current file count (e.g., "Processing 5/20") and logs specific output paths upon success
+- **Automatic skipping**: Files with existing text layers are skipped (override with `--redo-ocr`)
+- **Recursive structures**: Preserves directory hierarchy dynamically when processing subdirectories
 - **Error resilience**: One failed file doesn't stop the batch
 - **Quality verification**: Warns about suspiciously low OCR results
 - **Detailed logging**: Creates `ocr-process.log` in current directory
