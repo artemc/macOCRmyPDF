@@ -152,7 +152,7 @@ func setupInplaceMode(inputDir: String) -> String? {
     return sourceDir
 }
 
-func processImageToPDF(cgImage: CGImage, pdfContext: CGContext, pageBounds: CGRect, debug: Bool) -> String {
+func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfContext: CGContext, pageBounds: CGRect, debug: Bool) -> String {
     var extractedText = ""
 
     let request = VNRecognizeTextRequest { request, error in
@@ -179,7 +179,11 @@ func processImageToPDF(cgImage: CGImage, pdfContext: CGContext, pageBounds: CGRe
         print("Error: VNImageRequestHandler failed with error: \(error)")
     }
 
-    pdfContext.draw(cgImage, in: pageBounds)
+    if let originalPage = originalPDFPage {
+        pdfContext.drawPDFPage(originalPage)
+    } else {
+        pdfContext.draw(cgImage, in: pageBounds)
+    }
 
     for observation in request.results ?? [] {
         guard let topCandidate = observation.topCandidates(1).first else { continue }
@@ -272,17 +276,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         guard let page = inputPDF.page(at: pageIndex) else { continue }
 
         var pageBounds = page.bounds(for: .mediaBox)
-        let scaleFactor = max(
-            pageBounds.width / a4PortraitSize.width,
-            pageBounds.height / a4PortraitSize.height
-        )
-
-        if scaleFactor > 1 {
-            pageBounds.size.width = pageBounds.width / scaleFactor
-            pageBounds.size.height = pageBounds.height / scaleFactor
-        }
-
-        // Render page at high resolution (2x for retina quality)
+        
         let renderScale: CGFloat = 2.0
         let renderSize = CGSize(
             width: page.bounds(for: .mediaBox).width * renderScale,
@@ -301,23 +295,18 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
             space: colorSpace,
             bitmapInfo: bitmapInfo.rawValue
         ) else {
-            if debug {
-                print("Warning: Unable to create rendering context for page \(pageIndex + 1)")
-            }
+            if debug { print("Warning: Unable to create rendering context for page \(pageIndex + 1)") }
             continue
         }
 
         context.setFillColor(NSColor.white.cgColor)
         context.fill(CGRect(origin: .zero, size: renderSize))
-
         context.scaleBy(x: renderScale, y: renderScale)
 
         page.draw(with: .mediaBox, to: context)
 
         guard let cgImage = context.makeImage() else {
-            if debug {
-                print("Warning: Unable to get CGImage from page \(pageIndex + 1)")
-            }
+            if debug { print("Warning: Unable to get CGImage from page \(pageIndex + 1)") }
             continue
         }
 
@@ -326,7 +315,15 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         }
 
         pdfContext.beginPage(mediaBox: &pageBounds)
-        let pageText = processImageToPDF(cgImage: cgImage, pdfContext: pdfContext, pageBounds: pageBounds, debug: debug)
+        
+        let pageText = processImageToPDF(
+            cgImage: cgImage, 
+            originalPDFPage: page.pageRef, 
+            pdfContext: pdfContext, 
+            pageBounds: pageBounds, 
+            debug: debug
+        )
+        
         allExtractedText.append(pageText)
         pdfContext.endPage()
     }
@@ -385,7 +382,7 @@ func recognizeText(from imagePath: String, outputPDFPath: String, debug: Bool = 
     }
 
     pdfContext.beginPage(mediaBox: &pageBounds)
-    let extractedText = processImageToPDF(cgImage: cgImage, pdfContext: pdfContext, pageBounds: pageBounds, debug: debug)
+    let extractedText = processImageToPDF(cgImage: cgImage, originalPDFPage: nil, pdfContext: pdfContext, pageBounds: pageBounds, debug: debug)
     pdfContext.endPage()
     pdfContext.closePDF()
 
