@@ -421,7 +421,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         }
     }
 
-    let logPath = URL(fileURLWithPath: outputDir).appendingPathComponent("ocr-process.log").path
+    let logPath = "\(fileManager.currentDirectoryPath)/ocr-process.log"
 
     logToFile("=== OCR Batch Processing Started ===", logPath: logPath)
     logToFile("Input directory: \(inputDir)", logPath: logPath)
