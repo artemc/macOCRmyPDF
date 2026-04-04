@@ -546,7 +546,8 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         switch processResult {
         case .success(let text):
             result.processed += 1
-            logToFile("Successfully processed: \(fileName)", logPath: logPath)
+            print("  Successfully saved to \(outputPath)")
+            logToFile("Successfully processed: \(fileName) -> \(outputPath)", logPath: logPath)
 
             // Verify quality
             if !verifyOCRQuality(text: text, outputPath: outputPath) {
@@ -711,7 +712,7 @@ if isDirectory.boolValue {
     // Handle result for single file mode
     switch result {
     case .success:
-        print("Processing complete!")
+        print("Processing complete! Saved to \(outputPDFPath)")
     case .failure(let error):
         switch error {
         case .textLayerExists:
