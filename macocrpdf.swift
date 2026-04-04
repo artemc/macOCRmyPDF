@@ -1,12 +1,22 @@
 import AppKit
 import CoreText
 import Foundation
-import NaturalLanguage
 import PDFKit
 import Vision
 
 let fontScaleX = 0.7 // Magic number. Text wont render in PDF unless we scale it down a little bit against bounding box.
 let a4PortraitSize = CGSize(width: 595, height: 842) // A4 portrait dimensions in points
+let minimumOCRTextLength = 10
+let invisibleTextFontSize: CGFloat = 12
+private let isoFormatter = ISO8601DateFormatter()
+
+func defaultPDFMetadata() -> [CFString: Any] {
+    [
+        kCGPDFContextCreator: "Mac Vision OCR PDF",
+        kCGPDFContextTitle: "OCR Generated PDF",
+        kCGPDFContextSubject: "Text extracted from images",
+    ]
+}
 
 // MARK: - Batch Processing Support
 
@@ -15,7 +25,6 @@ enum OCRError: Error {
     case textLayerExists
     case ocrProcessingFailed(String)
     case outputWriteFailed(String)
-    case lowQualityOCR
 }
 
 struct BatchResult {
@@ -24,25 +33,6 @@ struct BatchResult {
     var failed: Int = 0
     var lowQuality: Int = 0
     var errors: [(String, String)] = []
-}
-
-func extractTitle(from text: String) -> String {
-    let tagger = NLTagger(tagSchemes: [.nameType])
-    tagger.string = text
-    var title = "OCR Generated PDF"
-
-    tagger.enumerateTags(
-        in: text.startIndex..<text.endIndex, unit: .sentence, scheme: .nameType,
-        options: [.omitOther, .joinNames]
-    ) { tag, tokenRange in
-        if let tag = tag, tag == .organizationName || tag == .personalName || tag == .placeName {
-            title = String(text[tokenRange])
-            return false  // Stop after finding the first key phrase
-        }
-        return true
-    }
-
-    return title
 }
 
 func pdfHasTextLayer(pdfURL: URL) -> Bool {
@@ -100,11 +90,11 @@ func discoverFiles(in directory: String, recursive: Bool = false) -> [URL] {
     }
 }
 
-func verifyOCRQuality(text: String, outputPath: String) -> Bool {
+func verifyOCRQuality(text: String) -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
     // Check minimum length
-    guard trimmed.count >= 10 else {
+    guard trimmed.count >= minimumOCRTextLength else {
         return false
     }
 
@@ -117,8 +107,9 @@ func verifyOCRQuality(text: String, outputPath: String) -> Bool {
     return true
 }
 
+// Note: Not thread-safe. If concurrency is added, protect with a lock.
 func logToFile(_ message: String, logPath: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let timestamp = isoFormatter.string(from: Date())
     let logMessage = "[\(timestamp)] \(message)\n"
 
     let fileManager = FileManager.default
@@ -129,11 +120,11 @@ func logToFile(_ message: String, logPath: String) {
     }
 
     if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+        defer { fileHandle.closeFile() }
         fileHandle.seekToEndOfFile()
         if let data = logMessage.data(using: .utf8) {
             fileHandle.write(data)
         }
-        fileHandle.closeFile()
     }
 }
 
@@ -172,18 +163,7 @@ func setupInplaceMode(inputDir: String) -> String? {
 func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfContext: CGContext, pageBounds: CGRect, debug: Bool) -> String {
     var extractedText = ""
 
-    let request = VNRecognizeTextRequest { request, error in
-        guard let results = request.results as? [VNRecognizedTextObservation], error == nil else {
-            print("Error: OCR processing failed: \(error?.localizedDescription ?? "Unknown error")")
-            return
-        }
-
-        for observation in results {
-            if let topCandidate = observation.topCandidates(1).first {
-                extractedText.append(topCandidate.string + " ")
-            }
-        }
-    }
+    let request = VNRecognizeTextRequest()
 
     request.automaticallyDetectsLanguage = true
     request.usesLanguageCorrection = true
@@ -202,6 +182,14 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
         pdfContext.draw(cgImage, in: pageBounds)
     }
 
+    // Extract text from results
+    for observation in request.results ?? [] {
+        if let topCandidate = observation.topCandidates(1).first {
+            extractedText.append(topCandidate.string + " ")
+        }
+    }
+
+    // Draw invisible text layer for search/selection
     for observation in request.results ?? [] {
         guard let topCandidate = observation.topCandidates(1).first else { continue }
         let normalizedRect = observation.boundingBox
@@ -217,15 +205,18 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
         let attributedString = NSAttributedString(
             string: text,
             attributes: [
-                .font: CTFontCreateWithName("Helvetica" as CFString, 12, nil),
+                .font: CTFontCreateWithName("Helvetica" as CFString, invisibleTextFontSize, nil),
                 .foregroundColor: NSColor.black.cgColor,
             ]
         )
 
+        let attrSize = attributedString.size()
+        guard attrSize.width > 0, attrSize.height > 0 else { continue }
+
         pdfContext.saveGState()
         pdfContext.setTextDrawingMode(.invisible)
-        let widthScale = textRect.width / attributedString.size().width
-        let heightScale = textRect.height / attributedString.size().height * fontScaleX
+        let widthScale = textRect.width / attrSize.width
+        let heightScale = textRect.height / attrSize.height * fontScaleX
         pdfContext.translateBy(x: textRect.origin.x, y: textRect.origin.y)
         pdfContext.scaleBy(x: widthScale, y: heightScale)
         pdfContext.setLineWidth(1.0 / max(widthScale, heightScale))
@@ -233,8 +224,8 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
         let textPath = CGMutablePath()
         textPath.addRect(
             CGRect(
-                x: 0, y: 0, width: attributedString.size().width,
-                height: attributedString.size().height / fontScaleX))
+                x: 0, y: 0, width: attrSize.width,
+                height: attrSize.height / fontScaleX))
         let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
         let textFrame = CTFramesetterCreateFrame(
             framesetter, CFRangeMake(0, attributedString.length), textPath, nil)
@@ -283,11 +274,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         firstPageBounds = firstPage.bounds(for: .mediaBox)
     }
 
-    let pdfMetaData: [CFString: Any] = [
-        kCGPDFContextCreator: "Mac Vision OCR PDF",
-        kCGPDFContextTitle: "OCR Generated PDF",
-        kCGPDFContextSubject: "Text extracted from images",
-    ]
+    let pdfMetaData = defaultPDFMetadata()
 
     guard let pdfContext = CGContext(
         consumer: pdfConsumer, mediaBox: &firstPageBounds, pdfMetaData as CFDictionary)
@@ -341,7 +328,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         
         let pageText = processImageToPDF(
             cgImage: cgImage, 
-            originalPDFPage: redoOCR ? nil : page.pageRef, 
+            originalPDFPage: page.pageRef, 
             pdfContext: pdfContext, 
             pageBounds: pageBounds, 
             debug: debug
@@ -387,11 +374,7 @@ func recognizeText(from imagePath: String, outputPDFPath: String, debug: Bool = 
         pageBounds.size = CGSize(width: cgImage.width, height: cgImage.height)
     }
 
-    let pdfMetaData: [CFString: Any] = [
-        kCGPDFContextCreator: "Mac Vision OCR PDF",
-        kCGPDFContextTitle: "OCR Generated PDF",
-        kCGPDFContextSubject: "Text extracted from image",
-    ]
+    let pdfMetaData = defaultPDFMetadata()
 
     let pdfData = NSMutableData()
     guard let pdfConsumer = CGDataConsumer(data: pdfData) else {
@@ -426,8 +409,19 @@ func recognizeText(from imagePath: String, outputPDFPath: String, debug: Bool = 
 func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive: Bool, backupDir: String?, debug: Bool, redoOCR: Bool = false) -> BatchResult {
     var result = BatchResult()
     let fileManager = FileManager.default
-    let logPath = "\(fileManager.currentDirectoryPath)/ocr-process.log"
     let startTime = Date()
+
+    // Create output directory if needed (must exist before writing log file)
+    if !fileManager.fileExists(atPath: outputDir) {
+        do {
+            try fileManager.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+        } catch {
+            print("Error: Failed to create output directory: \(error.localizedDescription)")
+            return result
+        }
+    }
+
+    let logPath = URL(fileURLWithPath: outputDir).appendingPathComponent("ocr-process.log").path
 
     logToFile("=== OCR Batch Processing Started ===", logPath: logPath)
     logToFile("Input directory: \(inputDir)", logPath: logPath)
@@ -449,18 +443,6 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
 
     logToFile("Found \(actualFiles.count) files to process", logPath: logPath)
     print("Found \(actualFiles.count) file(s) to process\n")
-
-    // Create output directory if needed
-    if !fileManager.fileExists(atPath: outputDir) {
-        do {
-            try fileManager.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
-            logToFile("Created output directory: \(outputDir)", logPath: logPath)
-        } catch {
-            print("Error: Failed to create output directory: \(error.localizedDescription)")
-            logToFile("Failed to create output directory: \(error.localizedDescription)", logPath: logPath)
-            return result
-        }
-    }
 
     // Process each file
     for (index, fileURL) in actualFiles.enumerated() {
@@ -497,8 +479,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         }
 
         // Determine output path
-        let outputFileName = "\(baseNameWithoutExt).pdf"
-        let outputPath = "\(fileOutputDir)/\(outputFileName)"
+        let outputPath = URL(fileURLWithPath: fileOutputDir).appendingPathComponent("\(baseNameWithoutExt).pdf").path
 
         // In inplace mode, check if file will be skipped before moving it
         if inplace && fileExtension == "pdf" && !redoOCR && pdfHasTextLayer(pdfURL: fileURL) {
@@ -550,7 +531,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
             logToFile("Successfully processed: \(fileName) -> \(outputPath)", logPath: logPath)
 
             // Verify quality
-            if !verifyOCRQuality(text: text, outputPath: outputPath) {
+            if !verifyOCRQuality(text: text) {
                 result.lowQuality += 1
                 print("  Warning: Low quality OCR detected")
                 logToFile("Warning: Low quality OCR for \(fileName)", logPath: logPath)
@@ -583,10 +564,6 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
                 print("  Failed: Could not write output file")
                 logToFile("Failed \(fileName): \(msg)", logPath: logPath)
 
-            case .lowQualityOCR:
-                result.lowQuality += 1
-                print("  Warning: Low quality OCR")
-                logToFile("Warning: Low quality OCR for \(fileName)", logPath: logPath)
             }
         }
 
@@ -614,7 +591,7 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
         }
     }
 
-    print("\nSee ocr-process.log for details.")
+    print("\nLog saved to \(logPath)")
 
     return result
 }
@@ -636,7 +613,7 @@ if CommandLine.arguments.count < 2 {
     print("  --inplace:     Moves originals to <input_dir>-source/, replaces with OCR versions")
     print("  --recursive:   Process files in subdirectories")
     print("  -r:            Alias for --recursive")
-    print("  --redo-ocr:    Redo OCR for PDFs that already have a text layer (rasterizes original)")
+    print("  --redo-ocr:    Redo OCR for PDFs that already have a text layer (preserves original quality)")
     exit(1)
 }
 
@@ -648,7 +625,10 @@ let recursiveMode = CommandLine.arguments.contains("--recursive") || CommandLine
 let redoOCRMode = CommandLine.arguments.contains("--redo-ocr")
 
 var isDirectory: ObjCBool = false
-fileManager.fileExists(atPath: inputPath, isDirectory: &isDirectory)
+guard fileManager.fileExists(atPath: inputPath, isDirectory: &isDirectory) else {
+    print("Error: '\(inputPath)' does not exist")
+    exit(1)
+}
 
 if isDirectory.boolValue {
     // Directory mode
@@ -671,7 +651,8 @@ if isDirectory.boolValue {
         // Process in place: files stay in original directory
         // Only files that are processed get moved to backup first
         // Skipped files and subdirectories remain untouched
-        _ = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, recursive: recursiveMode, backupDir: backupDir, debug: debugMode, redoOCR: redoOCRMode)
+        let batchResult = processBatch(inputDir: inputPath, outputDir: inputPath, inplace: true, recursive: recursiveMode, backupDir: backupDir, debug: debugMode, redoOCR: redoOCRMode)
+        if batchResult.failed > 0 { exit(2) }
 
     } else {
         // Check if second argument is provided and is not a flag
@@ -688,25 +669,27 @@ if isDirectory.boolValue {
             outputDir = parentDir.appendingPathComponent("\(dirName)-ocr").path
         }
 
-        _ = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, recursive: recursiveMode, backupDir: nil, debug: debugMode, redoOCR: redoOCRMode)
+        let batchResult = processBatch(inputDir: inputPath, outputDir: outputDir, inplace: false, recursive: recursiveMode, backupDir: nil, debug: debugMode, redoOCR: redoOCRMode)
+        if batchResult.failed > 0 { exit(2) }
     }
 
 } else {
     // Single file mode (backward compatible)
-    if CommandLine.arguments.count < 3 {
+    let nonFlagArgs = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+    if nonFlagArgs.count < 2 {
         print("Error: Single file mode requires output path")
         print("Usage: macocrpdf <input_file> <output_pdf> [--debug]")
         exit(1)
     }
 
-    let outputPDFPath = CommandLine.arguments[2]
+    let outputPDFPath = nonFlagArgs[nonFlagArgs.index(after: nonFlagArgs.startIndex)]
     let fileExtension = (inputPath as NSString).pathExtension.lowercased()
 
     let result: Result<String, OCRError>
     if fileExtension == "pdf" {
-        result = processPDF(from: inputPath, outputPDFPath: outputPDFPath, debug: true, redoOCR: redoOCRMode)
+        result = processPDF(from: inputPath, outputPDFPath: outputPDFPath, debug: debugMode, redoOCR: redoOCRMode)
     } else {
-        result = recognizeText(from: inputPath, outputPDFPath: outputPDFPath, debug: true)
+        result = recognizeText(from: inputPath, outputPDFPath: outputPDFPath, debug: debugMode)
     }
 
     // Handle result for single file mode
@@ -726,8 +709,6 @@ if isDirectory.boolValue {
         case .outputWriteFailed(let msg):
             print("Error: Failed to write output: \(msg)")
             exit(1)
-        case .lowQualityOCR:
-            print("Warning: Low quality OCR detected")
         }
     }
 }

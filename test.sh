@@ -351,78 +351,6 @@ test_debug_mode() {
     assert_success "Debug mode shows OCR details"
 }
 
-# Test 13: Conflicting flags
-test_conflicting_flags() {
-    echo -e "\n${BLUE}=== Test 13: Conflicting Flags (output dir + --inplace) ===${NC}"
-
-    mkdir -p "$TEST_DIR/conflict"
-    cp in.png "$TEST_DIR/conflict/test.png"
-
-    OUTPUT=$(./macocrpdf "$TEST_DIR/conflict/" /tmp/output/ --inplace 2>&1 || true)
-    echo "$OUTPUT" | grep -q "Cannot use custom output directory with --inplace"
-    assert_success "Error shown for conflicting flags"
-
-    # Verify no processing occurred
-    assert_file_not_exists "$TEST_DIR/conflict/test.pdf"
-    assert_success "No processing occurred with conflicting flags"
-}
-
-# Test 14: Dot directory handling
-test_dot_directory() {
-    echo -e "\n${BLUE}=== Test 14: Dot Directory (.) Handling ===${NC}"
-
-    # Test default mode with "."
-    mkdir -p "$TEST_DIR/dottest"
-    cp in.png "$TEST_DIR/dottest/file.png"
-
-    cd "$TEST_DIR/dottest"
-    OUTPUT=$(../../macocrpdf . 2>&1)
-    cd - > /dev/null
-
-    # Should create dottest-ocr, not .-ocr
-    assert_dir_exists "$TEST_DIR/dottest-ocr"
-    assert_file_exists "$TEST_DIR/dottest-ocr/file.pdf"
-
-    echo "$OUTPUT" | grep -q "Found 1"
-    assert_success "Dot directory processed in default mode"
-
-    # Test inplace mode with "."
-    mkdir -p "$TEST_DIR/dottest2"
-    cp in.png "$TEST_DIR/dottest2/file2.png"
-
-    cd "$TEST_DIR/dottest2"
-    OUTPUT=$(../../macocrpdf . --inplace 2>&1)
-    cd - > /dev/null
-
-    # Should create dottest2-source, not .-source
-    assert_dir_exists "$TEST_DIR/dottest2-source"
-    assert_file_exists "$TEST_DIR/dottest2-source/file2.png"
-    assert_file_exists "$TEST_DIR/dottest2/file2.pdf"
-
-    echo "$OUTPUT" | grep -q "dottest2-source"
-    assert_success "Dot directory uses actual directory name in inplace mode"
-}
-
-# Test 15: Relative output directory
-test_relative_output_directory() {
-    echo -e "\n${BLUE}=== Test 15: Relative Output Directory ===${NC}"
-
-    mkdir -p "$TEST_DIR/reltest"
-    cp in.png "$TEST_DIR/reltest/file.png"
-
-    # Test with relative path like "../output"
-    cd "$TEST_DIR/reltest"
-    OUTPUT=$(../../macocrpdf . ../rel-out 2>&1)
-    cd - > /dev/null
-
-    # Verify relative output directory was created and used
-    assert_dir_exists "$TEST_DIR/rel-out"
-    assert_file_exists "$TEST_DIR/rel-out/file.pdf"
-
-    echo "$OUTPUT" | grep -q "Found 1"
-    assert_success "Relative output directory works correctly"
-}
-
 # Test 12: Inplace mode with skipped files and subdirectories
 test_inplace_with_skipped_files() {
     echo -e "\n${BLUE}=== Test 12: Inplace Mode - Skipped Files & Subdirs Preserved ===${NC}"
@@ -466,6 +394,73 @@ test_inplace_with_skipped_files() {
     fi
 }
 
+# Test 13: Conflicting flags
+test_conflicting_flags() {
+    echo -e "\n${BLUE}=== Test 13: Conflicting Flags (output dir + --inplace) ===${NC}"
+
+    mkdir -p "$TEST_DIR/conflict"
+    cp in.png "$TEST_DIR/conflict/test.png"
+
+    OUTPUT=$(./macocrpdf "$TEST_DIR/conflict/" /tmp/output/ --inplace 2>&1 || true)
+    echo "$OUTPUT" | grep -q "Cannot use custom output directory with --inplace"
+    assert_success "Error shown for conflicting flags"
+
+    # Verify no processing occurred
+    assert_file_not_exists "$TEST_DIR/conflict/test.pdf"
+    assert_success "No processing occurred with conflicting flags"
+}
+
+# Test 14: Dot directory handling
+test_dot_directory() {
+    echo -e "\n${BLUE}=== Test 14: Dot Directory (.) Handling ===${NC}"
+
+    # Test default mode with "."
+    mkdir -p "$TEST_DIR/dottest"
+    cp in.png "$TEST_DIR/dottest/file.png"
+
+    OUTPUT=$(cd "$TEST_DIR/dottest" && ../../macocrpdf . 2>&1)
+
+    # Should create dottest-ocr, not .-ocr
+    assert_dir_exists "$TEST_DIR/dottest-ocr"
+    assert_file_exists "$TEST_DIR/dottest-ocr/file.pdf"
+
+    echo "$OUTPUT" | grep -q "Found 1"
+    assert_success "Dot directory processed in default mode"
+
+    # Test inplace mode with "."
+    mkdir -p "$TEST_DIR/dottest2"
+    cp in.png "$TEST_DIR/dottest2/file2.png"
+
+    OUTPUT=$(cd "$TEST_DIR/dottest2" && ../../macocrpdf . --inplace 2>&1)
+
+    # Should create dottest2-source, not .-source
+    assert_dir_exists "$TEST_DIR/dottest2-source"
+    assert_file_exists "$TEST_DIR/dottest2-source/file2.png"
+    assert_file_exists "$TEST_DIR/dottest2/file2.pdf"
+
+    echo "$OUTPUT" | grep -q "dottest2-source"
+    assert_success "Dot directory uses actual directory name in inplace mode"
+}
+
+# Test 15: Relative output directory
+test_relative_output_directory() {
+    echo -e "\n${BLUE}=== Test 15: Relative Output Directory ===${NC}"
+
+    mkdir -p "$TEST_DIR/reltest"
+    cp in.png "$TEST_DIR/reltest/file.png"
+
+    # Test with relative path like "../output"
+    OUTPUT=$(cd "$TEST_DIR/reltest" && ../../macocrpdf . ../rel-out 2>&1)
+
+    # Verify relative output directory was created and used
+    assert_dir_exists "$TEST_DIR/rel-out"
+    assert_file_exists "$TEST_DIR/rel-out/file.pdf"
+
+    echo "$OUTPUT" | grep -q "Found 1"
+    assert_success "Relative output directory works correctly"
+}
+
+
 # Run all tests
 main() {
     echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
@@ -489,8 +484,6 @@ main() {
     test_conflicting_flags
     test_dot_directory
     test_relative_output_directory
-
-    cleanup
 
     # Summary
     echo -e "\n${BLUE}╔════════════════════════════════════════════╗${NC}"
