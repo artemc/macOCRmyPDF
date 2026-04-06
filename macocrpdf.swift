@@ -160,7 +160,7 @@ func setupInplaceMode(inputDir: String) -> String? {
     return sourceDir
 }
 
-func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfContext: CGContext, pageBounds: CGRect, debug: Bool) -> String {
+func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfContext: CGContext, pageBounds: CGRect, pageRotation: Int = 0, debug: Bool) -> String {
     var extractedText = ""
 
     let request = VNRecognizeTextRequest()
@@ -177,7 +177,28 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
     }
 
     if let originalPage = originalPDFPage {
+        // Apply rotation transform so CGContext.drawPDFPage renders the page
+        // in its rotated orientation. CGContext.drawPDFPage ignores the PDF
+        // /Rotate metadata, so we must apply it manually.
+        pdfContext.saveGState()
+        let w = pageBounds.size.width
+        let h = pageBounds.size.height
+        switch pageRotation {
+        case 90:
+            // Rotate 90° CCW: translate then rotate
+            pdfContext.translateBy(x: 0, y: h)
+            pdfContext.rotate(by: -CGFloat.pi / 2)
+        case 180:
+            pdfContext.translateBy(x: w, y: h)
+            pdfContext.rotate(by: -CGFloat.pi)
+        case 270:
+            pdfContext.translateBy(x: w, y: 0)
+            pdfContext.rotate(by: CGFloat.pi / 2)
+        default:
+            break
+        }
         pdfContext.drawPDFPage(originalPage)
+        pdfContext.restoreGState()
     } else {
         pdfContext.draw(cgImage, in: pageBounds)
     }
@@ -285,12 +306,25 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
     for pageIndex in 0..<inputPDF.pageCount {
         guard let page = inputPDF.page(at: pageIndex) else { continue }
 
-        var pageBounds = page.bounds(for: .mediaBox)
+        let rotation = page.rotation  // 0, 90, 180, or 270
+        let mediaBox = page.bounds(for: .mediaBox)
         
+        // For the output page, use rotated dimensions so the page appears
+        // in the orientation the user expects (after rotation is applied).
+        // PDFPage.bounds(for: .mediaBox) returns unrotated dimensions.
+        var pageBounds: CGRect
+        if rotation == 90 || rotation == 270 {
+            pageBounds = CGRect(x: 0, y: 0, width: mediaBox.height, height: mediaBox.width)
+        } else {
+            pageBounds = CGRect(x: 0, y: 0, width: mediaBox.width, height: mediaBox.height)
+        }
+        
+        // PDFPage.draw applies rotation automatically, so the rendered bitmap
+        // will have the rotated dimensions.
         let renderScale: CGFloat = 2.0
         let renderSize = CGSize(
-            width: page.bounds(for: .mediaBox).width * renderScale,
-            height: page.bounds(for: .mediaBox).height * renderScale
+            width: pageBounds.width * renderScale,
+            height: pageBounds.height * renderScale
         )
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -321,7 +355,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         }
 
         if debug {
-            print("Processing page \(pageIndex + 1)/\(inputPDF.pageCount)...")
+            print("Processing page \(pageIndex + 1)/\(inputPDF.pageCount) (rotation: \(rotation)°)...")
         }
 
         pdfContext.beginPage(mediaBox: &pageBounds)
@@ -331,6 +365,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
             originalPDFPage: page.pageRef, 
             pdfContext: pdfContext, 
             pageBounds: pageBounds, 
+            pageRotation: rotation,
             debug: debug
         )
         
