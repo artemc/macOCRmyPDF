@@ -1,5 +1,6 @@
 import AppKit
 import CoreText
+import Dispatch
 import Foundation
 import PDFKit
 import Vision
@@ -8,7 +9,26 @@ let fontScaleX = 0.7 // Magic number. Text wont render in PDF unless we scale it
 let a4PortraitSize = CGSize(width: 595, height: 842) // A4 portrait dimensions in points
 let minimumOCRTextLength = 10
 let invisibleTextFontSize: CGFloat = 12
+let pageRenderTimeoutSeconds: Int = 30
 private let isoFormatter = ISO8601DateFormatter()
+
+/// Temporarily redirects stderr to /dev/null while executing the closure.
+/// CoreGraphics prints non-fatal warnings (e.g. JBIG2 stream errors) to stderr
+/// that cannot be caught or suppressed any other way.
+func suppressingStderr<T>(_ body: () -> T) -> T {
+    let originalStderr = dup(STDERR_FILENO)
+    let devNull = open("/dev/null", O_WRONLY)
+    if devNull >= 0 {
+        dup2(devNull, STDERR_FILENO)
+        close(devNull)
+    }
+    let result = body()
+    if originalStderr >= 0 {
+        dup2(originalStderr, STDERR_FILENO)
+        close(originalStderr)
+    }
+    return result
+}
 
 func defaultPDFMetadata() -> [CFString: Any] {
     [
@@ -36,13 +56,14 @@ struct BatchResult {
 }
 
 func pdfHasTextLayer(pdfURL: URL) -> Bool {
-    guard let pdfDoc = PDFDocument(url: pdfURL) else {
+    guard let pdfDoc = suppressingStderr({ PDFDocument(url: pdfURL) }) else {
         return false
     }
 
     for pageIndex in 0..<pdfDoc.pageCount {
         guard let page = pdfDoc.page(at: pageIndex) else { continue }
-        if let pageContent = page.string, !pageContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let pageContent = suppressingStderr { page.string }
+        if let content = pageContent, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
     }
@@ -177,15 +198,16 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
     }
 
     if let originalPage = originalPDFPage {
-        // Apply rotation transform so CGContext.drawPDFPage renders the page
-        // in its rotated orientation. CGContext.drawPDFPage ignores the PDF
-        // /Rotate metadata, so we must apply it manually.
-        pdfContext.saveGState()
+        // Draw the original PDF page directly into the output PDF context.
+        // This preserves the original compressed streams (JBIG2, JPEG, etc.)
+        // and avoids rasterization, keeping the output file size small.
+        // CGContext.drawPDFPage ignores /Rotate metadata, so we apply it manually.
         let w = pageBounds.size.width
         let h = pageBounds.size.height
+
+        pdfContext.saveGState()
         switch pageRotation {
         case 90:
-            // Rotate 90° CCW: translate then rotate
             pdfContext.translateBy(x: 0, y: h)
             pdfContext.rotate(by: -CGFloat.pi / 2)
         case 180:
@@ -197,7 +219,7 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
         default:
             break
         }
-        pdfContext.drawPDFPage(originalPage)
+        suppressingStderr { pdfContext.drawPDFPage(originalPage) }
         pdfContext.restoreGState()
     } else {
         pdfContext.draw(cgImage, in: pageBounds)
@@ -260,7 +282,7 @@ func processImageToPDF(cgImage: CGImage, originalPDFPage: CGPDFPage? = nil, pdfC
 func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false, redoOCR: Bool = false) -> Result<String, OCRError> {
     let pdfURL = URL(fileURLWithPath: pdfPath)
 
-    guard let inputPDF = PDFDocument(url: pdfURL) else {
+    guard let inputPDF = suppressingStderr({ PDFDocument(url: pdfURL) }) else {
         if debug {
             print("Error: Unable to load PDF at \(pdfPath)")
         }
@@ -308,7 +330,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
 
         let rotation = page.rotation  // 0, 90, 180, or 270
         let mediaBox = page.bounds(for: .mediaBox)
-        
+
         // For the output page, use rotated dimensions so the page appears
         // in the orientation the user expects (after rotation is applied).
         // PDFPage.bounds(for: .mediaBox) returns unrotated dimensions.
@@ -318,7 +340,7 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         } else {
             pageBounds = CGRect(x: 0, y: 0, width: mediaBox.width, height: mediaBox.height)
         }
-        
+
         // PDFPage.draw applies rotation automatically, so the rendered bitmap
         // will have the rotated dimensions.
         let renderScale: CGFloat = 2.0
@@ -347,7 +369,18 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         context.fill(CGRect(origin: .zero, size: renderSize))
         context.scaleBy(x: renderScale, y: renderScale)
 
-        page.draw(with: .mediaBox, to: context)
+        // Render PDF page with a timeout to avoid hanging on corrupt streams (e.g. JBIG2)
+        let renderSemaphore = DispatchSemaphore(value: 0)
+        let renderQueue = DispatchQueue(label: "com.macocrpdf.render.\(pageIndex)")
+        renderQueue.async {
+            suppressingStderr { page.draw(with: .mediaBox, to: context) }
+            renderSemaphore.signal()
+        }
+        let renderResult = renderSemaphore.wait(timeout: .now() + .seconds(pageRenderTimeoutSeconds))
+        if renderResult == .timedOut {
+            print("Warning: Page \(pageIndex + 1) rendering timed out after \(pageRenderTimeoutSeconds)s (possibly corrupt), skipping")
+            continue
+        }
 
         guard let cgImage = context.makeImage() else {
             if debug { print("Warning: Unable to get CGImage from page \(pageIndex + 1)") }
@@ -359,16 +392,16 @@ func processPDF(from pdfPath: String, outputPDFPath: String, debug: Bool = false
         }
 
         pdfContext.beginPage(mediaBox: &pageBounds)
-        
+
         let pageText = processImageToPDF(
-            cgImage: cgImage, 
-            originalPDFPage: page.pageRef, 
-            pdfContext: pdfContext, 
-            pageBounds: pageBounds, 
+            cgImage: cgImage,
+            originalPDFPage: page.pageRef,
+            pdfContext: pdfContext,
+            pageBounds: pageBounds,
             pageRotation: rotation,
             debug: debug
         )
-        
+
         allExtractedText.append(pageText)
         pdfContext.endPage()
     }
