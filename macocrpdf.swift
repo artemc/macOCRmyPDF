@@ -668,11 +668,12 @@ func processBatch(inputDir: String, outputDir: String, inplace: Bool, recursive:
 
 if CommandLine.arguments.count < 2 {
     print("Usage:")
-    print("  Single file:  macocrpdf <input_file> <output_pdf> [--debug] [--redo-ocr]")
+    print("  Single file:  macocrpdf <input_file> [<output_pdf>] [--debug] [--redo-ocr]")
     print("  Directory:    macocrpdf <input_dir> [<output_dir>] [--inplace] [--recursive | -r] [--debug] [--redo-ocr]")
     print("")
     print("Single file mode:")
     print("  Supports image files (PNG, JPG, etc.) and PDF files")
+    print("  If output_pdf is omitted, saves as <input_stem>_ocr.pdf in the same directory")
     print("  PDF files with existing text layers will be skipped")
     print("")
     print("Directory mode:")
@@ -742,15 +743,19 @@ if isDirectory.boolValue {
     }
 
 } else {
-    // Single file mode (backward compatible)
+    // Single file mode
     let nonFlagArgs = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-    if nonFlagArgs.count < 2 {
-        print("Error: Single file mode requires output path")
-        print("Usage: macocrpdf <input_file> <output_pdf> [--debug]")
-        exit(1)
-    }
 
-    let outputPDFPath = nonFlagArgs[nonFlagArgs.index(after: nonFlagArgs.startIndex)]
+    let outputPDFPath: String
+    if nonFlagArgs.count >= 2 {
+        outputPDFPath = nonFlagArgs[nonFlagArgs.index(after: nonFlagArgs.startIndex)]
+    } else {
+        // Derive output path: same directory, stem + "_ocr" + ".pdf"
+        let inputURL = URL(fileURLWithPath: (inputPath as NSString).standardizingPath)
+        let stem = inputURL.deletingPathExtension().lastPathComponent
+        outputPDFPath = inputURL.deletingLastPathComponent()
+            .appendingPathComponent("\(stem)_ocr.pdf").path
+    }
     let fileExtension = (inputPath as NSString).pathExtension.lowercased()
 
     let result: Result<String, OCRError>
